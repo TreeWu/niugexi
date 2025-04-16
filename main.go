@@ -26,7 +26,7 @@ import (
 )
 
 //go:generate fyne package -os windows -icon xigua.png
-//go:generate upx -9  xigua.exe
+//go:generate upx -9  niugexi.exe
 
 //https://www.ixigua.com/home/104305645109/?source=pgc_author_name&list_entrance=anyVideo
 

@@ -13,5 +13,6 @@ type Conf struct {
 }
 
 type DBConfig struct {
-	Dns string `json:"dns"`
+	Type string `json:"type"`
+	Dns  string `json:"dns"`
 }

@@ -28,12 +28,7 @@ import (
 //go:generate fyne package -os windows -icon xigua.png
 //go:generate upx -9  xigua.exe
 
-//https://www.ixigua.com/7338043310168572427?logTag=6840d6236b6cc9908465
-
-type Media struct {
-	Href  string `json:"href"`
-	Title string `json:"title"`
-}
+//https://www.ixigua.com/home/104305645109/?source=pgc_author_name&list_entrance=anyVideo
 
 type Download struct {
 	Url   string
@@ -63,7 +58,8 @@ type Stats struct {
 func main() {
 
 	conf := Conf{Store: DBConfig{
-		Dns: "root:root@tcp(127.0.0.1:3306)/videos?charset=utf8mb4&parseTime=True&loc=Local",
+		Type: "sqlite", // 如果使用sqlite，则不需要配置dns
+		Dns:  "root:root@tcp(127.0.0.1:3306)/videos?charset=utf8mb4&parseTime=True&loc=Local",
 	},
 		MaxRepeat: 5,
 		Replace: map[string]string{

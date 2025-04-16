@@ -5,10 +5,10 @@ go 1.23.7
 require (
 	fyne.io/fyne/v2 v2.6.0
 	github.com/PuerkitoBio/goquery v1.10.2
-	github.com/cheggaaa/pb v1.0.29
 	github.com/chromedp/chromedp v0.13.1
 	github.com/wujunwei928/parse-video v0.0.1
 	gorm.io/driver/mysql v1.5.7
+	gorm.io/driver/sqlite v1.5.7
 	gorm.io/gorm v1.25.12
 )
 
@@ -43,7 +43,7 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jsummers/gobmp v0.0.0-20230614200233-a9de23ed2e25 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/mattn/go-runewidth v0.0.4 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/nicksnyder/go-i18n/v2 v2.5.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect

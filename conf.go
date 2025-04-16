@@ -1,7 +1,9 @@
 package main
 
 type Conf struct {
-	Mode         map[string]bool   `json:"mode"`
+	GetUrl       bool              `json:"getUrl"`
+	FillUrl      bool              `json:"fillUrl"`
+	Download     bool              `json:"download"`
 	Store        DBConfig          `json:"store"`
 	Replace      map[string]string `json:"replace"`
 	ShowBrowser  bool              `json:"showBrowser"`

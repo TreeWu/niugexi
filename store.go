@@ -25,7 +25,7 @@ type Video struct {
 }
 
 func (m *Video) TableName() string {
-	return "videos"
+	return "biz_videos"
 }
 
 func NewStore(conf DBConfig) (*Store, error) {

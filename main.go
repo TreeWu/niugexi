@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,16 +10,23 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/cheggaaa/pb"
 	"github.com/chromedp/chromedp"
 	"github.com/wujunwei928/parse-video/parser"
 )
+
+//go:generate fyne package -os windows -icon xigua.png
+//go:generate upx -9  xigua.exe
 
 //https://www.ixigua.com/7338043310168572427?logTag=6840d6236b6cc9908465
 
@@ -37,62 +42,263 @@ type Download struct {
 }
 
 type Server struct {
-	store *Store
+	store   *Store
+	running atomic.Bool
+	stats   Stats
+	cancel  context.CancelFunc
 }
 
-var conf Conf
+type Stats struct {
+	CurFile         string
+	CurFileSize     int64
+	CurFileDownSize int64
+	BytesCopied     int64
+	LastUpdateTime  time.Time
+	LastBytes       int64
+	Speed           float64
+	TotalFiles      int64
+	DownloadedFiles int64
+}
 
 func main() {
-	getwd, err := os.Getwd()
-	if err != nil {
-		return
-	}
-	fmt.Println(getwd)
-	dir, err := os.ReadFile(path.Join(getwd, "conf.json"))
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	err = json.Unmarshal(dir, &conf)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	store, err := NewStore(conf.Store)
-	if err != nil {
-		log.Fatal(err)
-	}
-	s := Server{store: store}
-	ctx := context.Background()
-	if ok := conf.Mode["geturl"]; ok {
-		log.Println("拉取最新的播放页面保存到数据库")
-		err = s.GetList(ctx, conf.TargetUrl)
-		if err != nil {
-			log.Fatal(err)
-		}
+
+	conf := Conf{Store: DBConfig{
+		Dns: "root:root@tcp(127.0.0.1:3306)/videos?charset=utf8mb4&parseTime=True&loc=Local",
+	},
+		MaxRepeat: 5,
+		Replace: map[string]string{
+			"山歌":   "",
+			"牛歌剧":  "",
+			"广西":   "",
+			"弘扬":   "",
+			"地方":   "",
+			"特色":   "",
+			"平南":   "",
+			"牛歌戏":  "",
+			"非遗":   "",
+			"文化":   "",
+			"非物质":  "",
+			"遗产":   "",
+			"《":    "",
+			"》":    "",
+			"戏曲":   "",
+			"，":    "",
+			" ":    "",
+			"精彩":   "",
+			"传承":   "",
+			"区粹":   "",
+			"戏剧":   "",
+			"现代版":  "",
+			"民间":   "",
+			"现代":   "",
+			"第一":   "第1",
+			"第二":   "第2",
+			"第三":   "第3",
+			"第四":   "第4",
+			"第五":   "第5",
+			"第六":   "第6",
+			"第七":   "第7",
+			"第八":   "第8",
+			"第九":   "第9",
+			"第十一":  "第11",
+			"第十二":  "第12",
+			"第十三":  "第13",
+			"第十四":  "第14",
+			"第十五":  "第15",
+			"第十六":  "第16",
+			"第十七":  "第17",
+			"第十八":  "第18",
+			"第十九":  "第19",
+			"第二十一": "第21",
+			"第二十二": "第22",
+			"第二十三": "第23",
+			"第十集":  "第10集",
+			"第二十集": "第20集",
+			"第十节":  "第10节",
+			"第二十节": "第20节",
+		},
 	}
 
-	if ok := conf.Mode["fillurl"]; ok {
-		log.Println("处理没有获取下载连接的")
-		err = s.FillDownload(ctx)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	myApp := app.NewWithID("xigua-shrimp")
+	window := myApp.NewWindow("西瓜下载工具")
 
-	if ok := conf.Mode["download"]; ok {
-		log.Println("本地下载列表和远程比较，补全未下载的文件")
-		err = s.DownloadNotExist(ctx)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	form := widget.NewForm()
 
-	log.Println("完成")
+	home := widget.NewEntry()
+	home.SetPlaceHolder("输入视频主页")
+	home.SetText(conf.TargetUrl)
+	form.AppendItem(widget.NewFormItem("视频主页", home))
+
+	showBrowser := widget.NewCheck("", func(b bool) {
+		conf.ShowBrowser = b
+	})
+	showBrowser.SetChecked(conf.ShowBrowser)
+	form.AppendItem(widget.NewFormItem("显示浏览器", showBrowser))
+
+	getUrl := widget.NewCheck("", func(b bool) {
+		conf.GetUrl = b
+	})
+	getUrl.SetChecked(conf.GetUrl)
+	form.AppendItem(widget.NewFormItem("获取链接", getUrl))
+
+	fillUrl := widget.NewCheck("", func(b bool) {
+		conf.FillUrl = b
+	})
+	fillUrl.SetChecked(conf.FillUrl)
+	form.AppendItem(widget.NewFormItem("填充地址", fillUrl))
+
+	download := widget.NewCheck("", func(b bool) {
+		conf.Download = b
+	})
+	download.SetChecked(conf.Download)
+	form.AppendItem(widget.NewFormItem("下载文件", download))
+
+	savePath := widget.NewEntry()
+	savePath.SetPlaceHolder("文件保存地址")
+	savePath.SetText(conf.DownloadPath)
+	savePath.Disable()
+	selectButton := widget.NewButton("浏览...", func() {
+		folderDialog := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
+			if err != nil {
+				dialog.ShowError(err, window)
+				return
+			}
+			if uri == nil {
+				log.Println("用户取消了选择")
+				return
+			}
+			savePath.SetText(uri.Path())
+		}, window)
+		folderDialog.Show()
+	})
+	pathRow := container.NewHSplit(
+		savePath,
+		selectButton,
+	)
+	pathRow.SetOffset(0.8)
+	form.AppendItem(widget.NewFormItem("文件保存地址", pathRow))
+
+	statsLabel := widget.NewLabel("")
+
+	var startButton *widget.Button
+	s := Server{running: atomic.Bool{}}
+
+	progressBar := widget.NewProgressBar()
+	progressBar.Min = 0
+	progressBar.Max = 100
+
+	statusLabel := widget.NewLabel("准备下载...")
+	currentFileLabel := widget.NewLabel("")
+	speedLabel := widget.NewLabel("")
+
+	stopButton := widget.NewButton("停止", func() {
+		if s.running.Load() && s.cancel != nil {
+			s.cancel()
+		}
+	})
+
+	startButton = widget.NewButton("开始", func() {
+		startButton.Disable()
+
+		go func() {
+			defer fyne.Do(func() { startButton.Enable() })
+			if s.running.Load() {
+				return
+			}
+			conf.TargetUrl = home.Text
+			conf.DownloadPath = savePath.Text
+			s.stats = Stats{}
+			s.running.Store(true)
+
+			go func() {
+				for {
+					fyne.Do(func() {
+						if s.stats.TotalFiles > 0 {
+							progress := float64(s.stats.DownloadedFiles/s.stats.TotalFiles) * 100
+							progressBar.SetValue(progress)
+							statusLabel.SetText(fmt.Sprintf("正在下载: %d/%d 文件", s.stats.DownloadedFiles, s.stats.TotalFiles))
+							currentFileLabel.SetText("当前文件: " + s.stats.CurFile)
+							speedLabel.SetText(fmt.Sprintf("速度: %.2f MB/s", s.stats.Speed))
+							statsLabel.SetText(fmt.Sprintf("已下载: %d 文件", s.stats.DownloadedFiles))
+						}
+					})
+					if !s.running.Load() {
+						return
+					}
+					time.Sleep(time.Second)
+				}
+			}()
+
+			defer s.running.Store(false)
+			if s.store == nil {
+				store, err := NewStore(conf.Store)
+				if err != nil {
+					fyne.Do(func() {
+						statsLabel.SetText(err.Error())
+					})
+					return
+				}
+				s.store = store
+			}
+
+			var ctx context.Context
+			ctx, s.cancel = context.WithCancel(context.Background())
+			if conf.GetUrl {
+				log.Println("拉取最新的播放页面保存到数据库")
+				err := s.GetList(ctx, conf)
+				if err != nil {
+					fyne.Do(func() {
+						statsLabel.SetText(err.Error())
+					})
+					return
+				}
+			}
+
+			if conf.FillUrl {
+				log.Println("处理没有获取下载连接的")
+				err := s.FillDownload(ctx, conf)
+				if err != nil {
+					fyne.Do(func() {
+						statsLabel.SetText(err.Error())
+					})
+					return
+				}
+			}
+
+			if conf.Download {
+				log.Println("本地下载列表和远程比较，补全未下载的文件")
+				err := s.DownloadNotExist(ctx, conf)
+				if err != nil {
+					fyne.Do(func() {
+						statsLabel.SetText(err.Error())
+					})
+					return
+				}
+			}
+		}()
+
+	})
+
+	box := container.NewVBox(
+		form,
+		startButton,
+		stopButton,
+		progressBar,
+		statusLabel,
+		currentFileLabel,
+		speedLabel,
+		statsLabel,
+	)
+	window.SetContent(box)
+	window.Resize(fyne.NewSize(600, 400))
+	window.ShowAndRun()
 }
 
 // GetList 获取所有的下载链接
-func (s *Server) GetList(ctx context.Context, url string) error {
+func (s *Server) GetList(ctx context.Context, conf Conf) error {
+	if conf.TargetUrl == "" {
+		return errors.New("请输入视频主页")
+	}
 	options := []chromedp.ExecAllocatorOption{
 		chromedp.Flag("headless", !conf.ShowBrowser), // debug使用
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36"),
@@ -107,7 +313,7 @@ func (s *Server) GetList(ctx context.Context, url string) error {
 	chromeCtx, c2 := chromedp.NewContext(c, chromedp.WithLogf(log.Printf))
 	defer c2()
 
-	err := chromedp.Run(chromeCtx, chromedp.Navigate(url),
+	err := chromedp.Run(chromeCtx, chromedp.Navigate(conf.TargetUrl),
 		chromedp.WaitVisible("div.userDetailV3__main__list"),
 	)
 	defer chromedp.Run(chromeCtx, chromedp.ActionFunc(func(ctx context.Context) error { return chromedp.Cancel(ctx) }))
@@ -228,13 +434,19 @@ func (s *Server) GetList(ctx context.Context, url string) error {
 }
 
 // FillDownload 填充下载地址
-func (s *Server) FillDownload(ctx context.Context) error {
+func (s *Server) FillDownload(ctx context.Context, conf Conf) error {
 	videos, err := s.store.GetEmptyDownload(ctx)
 	if err != nil {
 		return err
 	}
 
 	for _, item := range videos {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		log.Println("获取下载链接", item.SaveName)
 		var errs error
 		if item.WebDownloadUrl == "" {
@@ -242,7 +454,7 @@ func (s *Server) FillDownload(ctx context.Context) error {
 			errs = errors.Join(errs, err)
 		}
 		if item.MUrl == "" || item.MDownloadUrl == "" {
-			item.MDownloadUrl, err = s.GetDownloadUrlChrome(ctx, item.MDownloadUrl)
+			item.MDownloadUrl, err = s.GetDownloadUrlChrome(ctx, conf, item.MDownloadUrl)
 			errs = errors.Join(errs, err)
 		}
 		if errs != nil {
@@ -256,7 +468,7 @@ func (s *Server) FillDownload(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) GetDownloadUrlChrome(ctx context.Context, webUrl string) (string, error) {
+func (s *Server) GetDownloadUrlChrome(ctx context.Context, conf Conf, webUrl string) (string, error) {
 	options := []chromedp.ExecAllocatorOption{
 		chromedp.Flag("headless", !conf.ShowBrowser), // debug使用
 		chromedp.UserAgent(`Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36`),
@@ -308,7 +520,10 @@ func (s *Server) GetDownloadUrlParse(ctx context.Context, webUrl string) (string
 	return id.VideoUrl, nil
 }
 
-func (s *Server) DownloadNotExist(ctx context.Context) error {
+func (s *Server) DownloadNotExist(ctx context.Context, conf Conf) error {
+	if conf.DownloadPath == "" {
+		return errors.New("请填写保存地址")
+	}
 	// 获取数据库所有数据
 	allMedias := make(map[string]Video)
 	list, err := s.store.List()
@@ -331,12 +546,23 @@ func (s *Server) DownloadNotExist(ctx context.Context) error {
 		}
 	}
 
+	s.stats.TotalFiles = int64(len(allMedias))
 	for s2 := range allMedias {
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		s.stats.DownloadedFiles++
 		niugexi := allMedias[s2]
 		if !niugexi.NeedDownload {
 			continue
 		}
 		var errs error
+
+		niugexi.WebDownloadUrl, _ = s.GetDownloadUrlParse(ctx, niugexi.WebUrl)
 		if niugexi.WebDownloadUrl != "" {
 			log.Println("下载", niugexi.SaveName)
 			err = s.DownloadFile(Download{
@@ -368,16 +594,23 @@ func (s *Server) DownloadNotExist(ctx context.Context) error {
 // DownloadFile will download a url to a local file. It's efficient because it will
 // write as it downloads and not load the whole file into memory.
 func (s *Server) DownloadFile(d Download) error {
+	s.stats.CurFile = d.Title
+	s.stats.CurFileSize = 0
+	s.stats.CurFileDownSize = 0
+	s.stats.BytesCopied = 0
+	s.stats.LastUpdateTime = time.Time{}
+	s.stats.LastBytes = 0
+	s.stats.Speed = 0
 
 	client := &http.Client{}
 
 	// 创建一个 GET 请求
 	req, err := http.NewRequest("GET", d.Url, nil)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	// 设置请求头
+	//// 设置请求头
 	req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
 	req.Header.Set("accept-language", "zh-CN,zh;q=0.9")
 	req.Header.Set("cache-control", "max-age=0")
@@ -389,7 +622,6 @@ func (s *Server) DownloadFile(d Download) error {
 	req.Header.Set("sec-fetch-site", "none")
 	req.Header.Set("sec-fetch-user", "?1")
 	req.Header.Set("upgrade-insecure-requests", "1")
-	req.Header.Set("cookie", "msToken=_3UyugtA1ObN9cC9Ln30k28_rddPaayO4URQfuG7S4bBY3SnWJ8k6uIFidHJ51bEIJ7Brn6sjW9qeWjd6W05V3wQfHAuBS94LunKlibV; ttwid=1%7CljryZJfSOCXbioEHd37n64DLY03lRq4TJ8BL9HUs3Tc%7C1714399395%7C081165af3232224d1d7db3f587d1099d9dc7729bfab0a2f48fea3b6cac53b3c7")
 
 	// 发送请求并获取响应
 	resp, err := client.Do(req)
@@ -406,26 +638,42 @@ func (s *Server) DownloadFile(d Download) error {
 
 	length := resp.Header.Get("Content-Length")
 	size, _ := strconv.ParseInt(length, 10, 64)
-	body := resp.Body //获取文件内容
-	bar := pb.New(int(size)).Prefix(d.Title)
-	bar.SetWidth(120)               //设置进度条宽度
-	bar.SetRefreshRate(time.Second) //设置刷新速率
-	bar.ShowSpeed = true
-	bar.SetUnits(pb.U_BYTES)
-	bar.Start()
-	defer bar.Finish()
-	// create proxy reader
-	barReader := bar.NewProxyReader(body)
-	buffer := bytes.NewBuffer(nil)
-	writer := io.Writer(buffer)
-	_, err = io.Copy(writer, barReader)
-
-	out, err := os.Create(d.Path)
+	s.stats.CurFileSize = size
+	s2 := d.Path + ".download"
+	out, err := os.Create(s2)
 	if err != nil {
 		return err
 	}
+	defer os.Rename(s2, d.Path)
 	defer out.Close()
-	_, err = io.Copy(out, buffer)
-
+	copier := &statsWriter{
+		writer: out,
+		stats:  &s.stats,
+	}
+	_, err = io.Copy(copier, resp.Body)
 	return err
+}
+
+type statsWriter struct {
+	writer io.Writer
+	stats  *Stats
+}
+
+func (sw *statsWriter) Write(p []byte) (int, error) {
+	n, err := sw.writer.Write(p)
+	if n > 0 {
+		sw.stats.BytesCopied += int64(n)
+
+		now := time.Now()
+		if !sw.stats.LastUpdateTime.IsZero() {
+			elapsed := now.Sub(sw.stats.LastUpdateTime).Seconds()
+			if elapsed > 0 {
+				bytesDiff := sw.stats.BytesCopied - sw.stats.LastBytes
+				sw.stats.Speed = (float64(bytesDiff) / 1024 / 1024) / elapsed
+			}
+		}
+		sw.stats.LastUpdateTime = now
+		sw.stats.LastBytes = sw.stats.BytesCopied
+	}
+	return n, err
 }
